@@ -1,78 +1,72 @@
+from dataclasses import dataclass
 import re
 from bs4 import BeautifulSoup
 import requests
-LINK='https://www.momondo.com/'
-TIMEPATTERN=r"(\d{1,2}:\d{2} (am|pm))"
+import logging
+BASE_URL='https://www.momondo.com/'
+TIME_PATTERN=r"(\d{1,2}:\d{2} (am|pm))"
+logging.basicConfig(level=logging.DEBUG)
+
+@dataclass
+class SearchResult:
+    origin: str
+    destination: str
+    departure_time: str
+    arrival_time: str
+    connections: int
+    airlines: str
+    
+    def __str__(self):
+        return f"Flight from {self.origin} to {self.destination} from {self.departure_time} to {self.arrival_time} with {self.connections} connections by {self.airlines}"
 
 
-def getPrice(soup):
-    soup=soup[soup.find("price-text"):]
-    dollar_index=soup.find("$")
-    if dollar_index==-1:
-        return
-    price=""
-    dollar_index+=1
-    while True:
-        price+=soup[dollar_index]
-        dollar_index+=1
-        if  dollar_index==len(soup) or not soup[dollar_index].isnumeric():
-            break
-    return price
+def get_price(segment:BeautifulSoup):
+    price_segment=segment.find("div",{'class':re.compile(r".*price-text")})
+    return price_segment.get_text()
 
-def getNumConnections(soup):
-    soup=soup[soup.find("stops-text")+1:]
-    stop_index=soup.find("stop")
-    if stop_index==-1:
-        return
-    num_of_stops=0
-    if soup[stop_index-2].isnumeric():
-        num_of_stops=int(soup[stop_index-2])
-    return num_of_stops
+def get_num_connections(segment:BeautifulSoup):
+    outgoing_connections=0
+    return_connections=0
+    span=segment.find_all("span",{"class":re.compile(r".*stops-text")})
+    if span[0].get_text()!="nonstop":
+        outgoing_connections=span[0].get_text()[0]
+    if span[1].get_text()!="nonstop":
+        return_connections=span[1].get_text()[0]
+    return outgoing_connections,return_connections
 
-def getTimes(soup):
-    departure_time=re.search(TIMEPATTERN,soup)
-    index=soup.find(departure_time[0])+1
-    arrival_time=re.search(TIMEPATTERN,soup[index:])
-    return departure_time[0],arrival_time[0]
+def get_times(segment:BeautifulSoup):
+    divs=segment.find_all("div",{"class":"vmXl vmXl-mod-variant-large"})
+    outgoing_times=divs[0].find_all("span")
+    returning_times=divs[1].find_all("span")
+    return ((outgoing_times[0].get_text(),outgoing_times[2].get_text()),(returning_times[0].get_text(),returning_times[2].get_text()))
 
-def getAirlines(soup):
-    start_index=soup.find('<div class="c_cgF c_cgF-mod-variant-default" dir="auto">')+len('<div class="c_cgF c_cgF-mod-variant-default" dir="auto">')+3
-    end_index=soup[start_index:].find('</div>')+start_index-3
-    while soup[start_index]==" ":
-        start_index+=1
-    while soup[end_index]==" ":
-        end_index-=1
-    return soup[start_index:end_index]
+def get_airlines(segment:BeautifulSoup):
+    divs=segment.find_all("div",{"class":"VY2U"})
+    outgoing_airlines=divs[0].find("div",{'class':"c_cgF c_cgF-mod-variant-default"})
+    returning_airlines=divs[1].find("div",{'class':"c_cgF c_cgF-mod-variant-default"})
+    return outgoing_airlines.get_text(),returning_airlines.get_text()
 
-def results(origin,destination,departure_date,return_date):
-    request_link=LINK+"flight-search/"+origin+"-"+destination+"/"+departure_date+"/"+return_date+"?sort=price_a"
+def results(origin:str,destination:str,departure_date:str,return_date:str):
+    request_link=f"{BASE_URL}flight-search/{origin}-{destination}/{departure_date}/{return_date}?sort=price_a"
     session = requests.Session()
     flights_list=[]
-    with open("output.txt", "w", encoding="utf-8") as f:
-        session.get(LINK,headers={'User-Agent':'Mozilla/5.0'})
-        soup=BeautifulSoup(session.get(request_link,headers={'User-Agent':'Mozilla/5.0'}).text,'html.parser').prettify()
-        f.write(soup)
-        start_index=soup.find("data-resultid")
-        soup=soup[start_index:]
-        while start_index!=-1:
-            price=getPrice(soup)
-            connections=getNumConnections(soup)
-            times=getTimes(soup)
-            airlines=getAirlines(soup)
-            start_index=soup.find("data-resultid",1)
-            soup=soup[start_index:]
-            flights_list.append({
-                "origin":origin,
-                "destination":destination,
-                "departs at":times[0],
-                "arrives at":times[1],
-                "price":price+"$",
-                "connections":connections,
-                'airlines':airlines
-                })
-    return flights_list
+    session.get(BASE_URL,headers={'User-Agent':'Mozilla/5.0'})
+    soup=BeautifulSoup(session.get(request_link,headers={'User-Agent':'Mozilla/5.0'}).text,'html.parser')
+    soup_segments=soup.findAll("div",{"data-resultid" : re.compile(r".*")})
+    for segment in soup_segments:
+        price=get_price(segment)
+        connections=get_num_connections(segment)
+        outgoing_times,returning_times=get_times(segment)
+        outgoing_airlines,returning_airlines=get_airlines(segment)
+        flights_list.append({'outbound':SearchResult(origin,destination,departure_time=outgoing_times[0],arrival_time=outgoing_times[1],connections=connections[0],airlines=outgoing_airlines),
+                            'return':SearchResult(origin=destination,destination=origin,departure_time=returning_times[0],arrival_time=returning_times[1],connections=connections[1],airlines=returning_airlines),
+                            'price':price})
+    output=""
+    for result in flights_list:
+        output+=(f"outbound: {str(result['outbound'])}\n return: {str(result['return'])}\n price: {result['price']}\n\n")
+    return output
 
-print(*results('TLV','BUD','2024-09-18','2024-10-16'),sep="\n")
+print(results('TLV','BUD','2024-09-18','2024-10-16'))
 
 
 
